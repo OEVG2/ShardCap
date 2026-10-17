@@ -7,12 +7,18 @@ local function check(cond, name)
 end
 
 local now, bags, bagItem, cursor, combat, frames, chat, maxStack
+local soulOK = {}
+local function isSoulBagItem(id) return id == 22243 or id == 99999 end
+local function fits(b, id) return not isSoulBagItem(bagItem[b]) or soulOK[id] end
 local itemNames = { [6265] = "Soul Shard", [16265] = "Some Other Item", [6948] = "Hearthstone" }
 
 local function reset(opts)
 	opts = opts or {}
 	now, cursor, combat, frames, chat = 0, nil, false, {}, {}
 	maxStack = opts.maxStack or 3
+	soulOK = { [6265] = true }
+	if opts.reagentsOK ~= false then soulOK[16583] = true; soulOK[5565] = true end
+	familyKnown = opts.familyKnown
 	bags, bagItem = {}, {}
 	for b = 0, 4 do bags[b] = { size = 0, slots = {} } end
 	ShardCapDB, SHARDCAP_CAP_VALUE, SHARDCAP_SPAM = nil, nil, nil
@@ -40,6 +46,8 @@ end
 function GetItemInfo(id)
 	id = tonumber(id)
 	if id == 6265 then return "Soul Shard", "item:6265", 1, 0, "Reagent", "Reagent", maxStack end
+	if id == 16583 then return "Demonic Figurine", "item:16583", 1, 0, "Reagent", "Reagent", 10 end
+	if id == 5565 then return "Infernal Stone", "item:5565", 1, 0, "Reagent", "Reagent", 10 end
 	if id == 22243 then return "Small Soul Pouch", "item:22243", 2, 0, "Container", "Soul Bag", 1 end
 	if id == 99999 then return "Custom Soul Bag", "item:99999", 2, 0, "Container", "Soul Bag", 1 end
 	return "Bag", "item:" .. id, 1, 0, "Container", "Bag", 1
@@ -49,6 +57,7 @@ function SpellIsTargeting() return false end
 function PickupContainerItem(b, s)
 	local it = bags[b].slots[s]
 	if cursor then
+		if not fits(b, cursor.id) then return end -- "That item doesn't go in that container."
 		if it and it.id == cursor.id and it.count + cursor.count <= maxStack then
 			it.count = it.count + cursor.count; cursor = nil
 		elseif not it then
@@ -108,6 +117,7 @@ local function load(classic)
 			end,
 			SwapItems = function(sb, ss, db_, ds)
 				local a, b2 = bags[sb].slots[ss], bags[db_].slots[ds]
+				if (a and not fits(db_, a.id)) or (b2 and not fits(sb, b2.id)) then return true end -- server refuses silently
 				bags[sb].slots[ss], bags[db_].slots[ds] = b2, a; return true
 			end,
 			MoveItem = function(sb, ss, db_, ds, n)
@@ -119,7 +129,11 @@ local function load(classic)
 				return true
 			end,
 		}
-		C_Item = { GetItemMaxStackSizeByID = function(id) return maxStack end }
+		C_Item = { GetItemMaxStackSizeByID = function(id) return maxStack end,
+			GetItemFamily = function(id)
+				if not familyKnown then return 0 end -- family not reported: fall back to heuristics
+				return soulOK[id] and 4 or 0
+			end }
 	end
 	dofile(ADDON_FILE)
 	F = frames[1]
@@ -136,6 +150,13 @@ local function count(onlyBag)
 			end
 		end
 	end
+	return t
+end
+local function where(id)
+	local t = {}
+	for b = 0, 4 do for s = 1, bags[b].size do
+		local it = bags[b].slots[s]; if it and it.id == id then table.insert(t, b) end
+	end end
 	return t
 end
 local function slotsUsed()
@@ -220,6 +241,49 @@ for _, classic in ipairs({ false, true }) do
 	check(count() == 2, tag .. "locked stacks untouched")
 	bags[0].slots[2].locked = nil; bags[0].slots[1].locked = nil; run()
 	check(count() == 0, tag .. "deleted after unlock")
+
+	-- 10. Reagents go into the soul bag when there's room beyond the shard reserve
+	reset({ familyKnown = true }); setBag(0, 16); setBag(4, 12, 22243)
+	put(0, 1, 16583, 2); put(0, 2, 5565, 7); put(4, 1, 6265, 3)
+	load(classic); ShardCapDB.cap = 12; fire("BAG_UPDATE"); fire("BAG_UPDATE_DELAYED"); run()
+	check(where(16583)[1] == 4 and where(5565)[1] == 4, tag .. "figurine and infernal stone moved to soul bag")
+	check(bags[4].slots[12] ~= nil and bags[4].slots[11] ~= nil, tag .. "reagents fill soul bag from the end")
+	check(count() == 3, tag .. "shards untouched by reagent moves")
+
+	-- 11. Reserve: cap 12 / 3 per slot = 4 slots kept for shards
+	reset({ familyKnown = true }); setBag(0, 16); setBag(4, 5, 22243)
+	put(0, 1, 16583, 1); put(0, 2, 5565, 1); put(4, 1, 6265, 1)
+	load(classic); ShardCapDB.cap = 12; fire("BAG_UPDATE"); fire("BAG_UPDATE_DELAYED"); run()
+	local moved = 0
+	if where(16583)[1] == 4 then moved = moved + 1 end
+	if where(5565)[1] == 4 then moved = moved + 1 end
+	check(moved == 1, tag .. "only 1 reagent moved into a 5-slot soul bag (4 kept for shards), got " .. moved)
+
+	-- 12. Shards outside the soul bag get the free slots first
+	reset({ familyKnown = true }); setBag(0, 16); setBag(4, 2, 22243)
+	put(0, 1, 16583, 1); put(0, 2, 6265, 1); put(0, 3, 6265, 1)
+	load(classic); ShardCapDB.cap = 6; ShardCapDB.sort = true; fire("BAG_UPDATE"); fire("BAG_UPDATE_DELAYED"); run()
+	check(where(16583)[1] == 0, tag .. "reagent waits when shards need the space")
+
+	-- 13. Server that doesn't allow reagents in soul bags: gives up, no endless retries
+	reset({ reagentsOK = false }); setBag(0, 16); setBag(4, 12, 22243)
+	put(0, 1, 16583, 1); put(0, 2, 5565, 1)
+	load(classic); ShardCapDB.cap = 3; local before = table.getn(chat)
+	fire("BAG_UPDATE"); fire("BAG_UPDATE_DELAYED"); run(20)
+	check(where(16583)[1] == 0 and where(5565)[1] == 0 and cursor == nil, tag .. "refused reagents stay put, cursor empty")
+	check(table.getn(chat) - before == 2, tag .. "one notice per refused item (got " .. (table.getn(chat) - before) .. ")")
+	check(not F.shown, tag .. "scheduler goes idle after giving up")
+
+	-- 14. Blizzlike server (shards don't stack): reagents left alone
+	reset({ maxStack = 1, reagentsOK = false }); setBag(0, 16); setBag(4, 12, 22243)
+	put(0, 1, 16583, 1)
+	load(classic); fire("BAG_UPDATE"); fire("BAG_UPDATE_DELAYED"); run()
+	check(where(16583)[1] == 0 and table.getn(chat) == 0, tag .. "no attempt on Blizzlike servers")
+
+	-- 15. Toggle off
+	reset({ familyKnown = true }); setBag(0, 16); setBag(4, 12, 22243); put(0, 1, 5565, 1)
+	load(classic); SlashCmdList.SHARDCAP("reagents"); run()
+	check(where(5565)[1] == 0 and ShardCapDB.reagents == false, tag .. "/shardcap reagents turns it off")
 end
 
 -- 10. Migration from ShardCap 1.x and slash parsing

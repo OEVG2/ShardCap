@@ -17,12 +17,15 @@ local SHARD_ID = 6265
 -- or ClassicAPI; /shardcap soulbag <n> covers whatever slips through.
 local SOULBAG_IDS = { [21340]=true, [21341]=true, [21342]=true, [22243]=true, [22244]=true }
 local SOULBAG_SUBTYPES = { ["Soul Bag"]=true, ["Seelentasche"]=true }
+-- Warlock reagents that WoW 1.18.1 Clients let you keep in a soul bag
+local REAGENT_IDS = { [16583]=true, [5565]=true } -- Demonic Figurine, Infernal Stone
 
 local DEFAULTS = {
 	cap      = 12,     -- shards to keep
 	notify   = false,  -- chat output when something is deleted/moved
 	sort     = true,   -- move shards from normal bags into free soul bag slots
 	combat   = false,  -- also trim while in combat
+	reagents = true,   -- move Demonic Figurines / Infernal Stones into soul bags
 	soulbags = nil,    -- nil = auto-detect, otherwise { [bagID]=true }
 }
 
@@ -122,7 +125,7 @@ end
 -- Inventory scan
 ------------------------------------------------------------------------------
 local function Scan()
-	local stacks, freeSoul, total = {}, {}, 0
+	local stacks, freeSoul, total, reagents = {}, {}, 0, {}
 	for bag = 0, 4 do
 		local soul = IsSoulBag(bag)
 		for slot = 1, GetContainerNumSlots(bag) do
@@ -132,10 +135,12 @@ local function Scan()
 				total = total + count
 			elseif not id and soul then
 				table.insert(freeSoul, { bag = bag, slot = slot })
+			elseif id and REAGENT_IDS[id] and not soul then
+				table.insert(reagents, { id = id, bag = bag, slot = slot, count = count, locked = locked })
 			end
 		end
 	end
-	return stacks, freeSoul, total
+	return stacks, freeSoul, total, reagents
 end
 
 -- Deletion order: shards outside soul bags first, backpack first,
@@ -243,6 +248,81 @@ local function SortStep(stacks, freeSoul)
 end
 
 ------------------------------------------------------------------------------
+-- Warlock reagents -> soul bag (WoW 1.18.1 Clients allow these in soul bags)
+------------------------------------------------------------------------------
+local rejected = {}   -- [itemID] = true: this server won't put it in a soul bag
+local failures = {}   -- [itemID] = moves the server silently refused
+local lastReagentMove -- { id, bag, slot } of the last move we sent
+
+local function ReagentAllowed(id)
+	if rejected[id] then return false end
+	if api.classic and C_Item and type(C_Item.GetItemFamily) == "function" then
+		local ok, fam = pcall(C_Item.GetItemFamily, id)
+		if ok and type(fam) == "number" and fam > 0 then return IsBit4Set(fam) end
+	end
+	-- Only servers where shards stack (WoW 1.18.1 Clients) allow this; on Blizzlike
+	-- servers the client would refuse the move with an error every time.
+	return MaxStack() > 1
+end
+
+local function Reject(id)
+	if rejected[id] then return end
+	rejected[id] = true
+	local name = GetItemInfo(id) or ("item " .. id)
+	Print(name .. " can't go in a soul bag on this server; won't try again this session.")
+end
+
+-- Soul bag slots to keep free for shards: enough to hold the cap,
+-- and never less than the shard stacks still waiting outside.
+local function ShardReserve(stacks)
+	local inSoul, outside = 0, 0
+	for _, s in ipairs(stacks) do
+		if s.soul then inSoul = inSoul + 1 else outside = outside + 1 end
+	end
+	local need = math.ceil(db.cap / MaxStack()) - inSoul
+	if need < outside then need = outside end
+	if need < 0 then need = 0 end
+	return need
+end
+
+local function ReagentStep(stacks, freeSoul, reagents)
+	if not db.reagents then return false end
+	-- did the last move silently fail (server refused, item still where it was)?
+	local last = lastReagentMove
+	lastReagentMove = nil
+	if last then
+		for _, r in ipairs(reagents) do
+			if r.id == last.id and r.bag == last.bag and r.slot == last.slot and not r.locked then
+				failures[r.id] = (failures[r.id] or 0) + 1
+				if failures[r.id] >= 2 then Reject(r.id) end
+			end
+		end
+	end
+	local free = table.getn(freeSoul)
+	if free <= ShardReserve(stacks) then return false end
+	for _, r in ipairs(reagents) do
+		if not r.locked and ReagentAllowed(r.id) then
+			local dst = freeSoul[free] -- fill from the end, leave the front for shards
+			if api.classicSwap then
+				C_Container.SwapItems(r.bag, r.slot, dst.bag, dst.slot)
+			else
+				PickupContainerItem(r.bag, r.slot)
+				PickupContainerItem(dst.bag, dst.slot)
+				if CursorHasItem() then -- client refused it: put it back, stop trying
+					PickupContainerItem(r.bag, r.slot)
+					Reject(r.id)
+					return true
+				end
+			end
+			lastReagentMove = { id = r.id, bag = r.bag, slot = r.slot }
+			Notify("Moved " .. (GetItemInfo(r.id) or "reagent") .. " into your soul bag (bag " .. dst.bag .. ").")
+			return true
+		end
+	end
+	return false
+end
+
+------------------------------------------------------------------------------
 -- Scheduler (hidden OnUpdate frame: zero cost while idle)
 ------------------------------------------------------------------------------
 local frame = CreateFrame("Frame")
@@ -264,13 +344,17 @@ local function Pass()
 		return false -- PLAYER_REGEN_ENABLED will reschedule
 	end
 	if CursorBusy() then return true end -- try again shortly
-	local stacks, freeSoul, total = Scan()
+	local stacks, freeSoul, total, reagents = Scan()
 	if TrimStep(stacks, total) then return true end
 	-- don't shuffle bags mid-combat even if combat trimming is on
-	if not (inCombat or UnitAffectingCombat("player")) and SortStep(stacks, freeSoul) then return true end
+	if not (inCombat or UnitAffectingCombat("player")) then
+		if SortStep(stacks, freeSoul) then return true end
+		if ReagentStep(stacks, freeSoul, reagents) then return true end
+	end
 	-- retry while stacks are still locked by a pending server transaction
 	for _, s in ipairs(stacks) do if s.locked then return true end end
-	return false
+	for _, r in ipairs(reagents) do if r.locked then return true end end
+	return lastReagentMove ~= nil -- one more pass to confirm the last move landed
 end
 
 frame:Hide()
@@ -369,7 +453,8 @@ local function PrintStatus()
 	Print("Soul bags: " .. SoulBagList() .. (db.soulbags and " (manual)" or " (auto)")
 		.. ", " .. table.getn(freeSoul) .. " free soul slots")
 	Print("Notify " .. OnOff(db.notify) .. ", sort " .. OnOff(db.sort)
-		.. ", trim in combat " .. OnOff(db.combat) .. "  [" .. Backend() .. "]")
+		.. ", trim in combat " .. OnOff(db.combat) .. ", reagents " .. OnOff(db.reagents)
+		.. "  [" .. Backend() .. "]")
 end
 
 local function PrintHelp()
@@ -379,6 +464,7 @@ local function PrintHelp()
 	Print("/shardcap |cffffffffspam|r - toggle chat notifications")
 	Print("/shardcap |cffffffffsort|r - toggle moving shards into your soul bag")
 	Print("/shardcap |cffffffffcombat|r - toggle trimming during combat")
+	Print("/shardcap |cffffffffreagents|r - toggle moving Demonic Figurines / Infernal Stones into the soul bag")
 	Print("/shardcap |cffffffffsoulbag auto|1-4|r - auto-detect or toggle a bag as soul bag")
 	Print("/shardcap |cffffffffreset|r - restore defaults")
 	Print("Trims when you leave combat, deleting shards outside your soul bag first.")
@@ -438,6 +524,10 @@ SlashCmdList["SHARDCAP"] = function(msg)
 	elseif cmd == "combat" then
 		db.combat = not db.combat
 		Print("Trimming during combat " .. OnOff(db.combat) .. ".")
+	elseif cmd == "reagents" then
+		db.reagents = not db.reagents
+		Print("Moving Demonic Figurines / Infernal Stones into the soul bag " .. OnOff(db.reagents) .. ".")
+		Schedule(0.3)
 	elseif cmd == "soulbag" then
 		SetSoulBag(rest)
 	elseif cmd == "reset" then
