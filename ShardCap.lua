@@ -449,7 +449,9 @@ end
 
 local function PrintStatus()
 	local _, freeSoul, total = Scan()
-	Print("Cap: |cffffffff" .. db.cap .. "|r  Carrying: |cffffffff" .. total .. "|r  (v" .. VERSION .. ")")
+	local color = "|cffffffff"
+	if total > db.cap then color = "|cffff9900" end -- over the cap (e.g. in combat)
+	Print("Soul Shards: " .. color .. total .. "/" .. db.cap .. "|r  (v" .. VERSION .. ")")
 	Print("Soul bags: " .. SoulBagList() .. (db.soulbags and " (manual)" or " (auto)")
 		.. ", " .. table.getn(freeSoul) .. " free soul slots")
 	Print("Notify " .. OnOff(db.notify) .. ", sort " .. OnOff(db.sort)

@@ -301,6 +301,9 @@ SlashCmdList.SHARDCAP("soulbag 3"); check(ShardCapDB.soulbags and ShardCapDB.sou
 SlashCmdList.SHARDCAP("soulbag auto"); check(ShardCapDB.soulbags == nil, "back to auto")
 SlashCmdList.SHARDCAP("status"); SlashCmdList.SHARDCAP("help")
 check(table.getn(chat) > 5, "status/help print")
+reset(); setBag(0, 16); put(0, 1, 6265, 3); put(0, 2, 6265, 2)
+load(false); ShardCapDB.cap = 12; chat = {}; SlashCmdList.SHARDCAP("")
+check(string.find(chat[1] or "", "Soul Shards: |cffffffff5/12|r", 1, true) ~= nil, "/shardcap shows 5/12 (got: " .. (chat[1] or "nil") .. ")")
 
 -- 11. Unknown custom soul bag found through its "Soul Bag" subtype
 reset(); setBag(0, 16); setBag(3, 20, 99999); put(0, 1, 6265, 1)
