@@ -125,7 +125,7 @@ end
 -- Inventory scan
 ------------------------------------------------------------------------------
 local function Scan()
-	local stacks, freeSoul, total, reagents = {}, {}, 0, {}
+	local stacks, freeSoul, total, reagents, reagentTotals = {}, {}, 0, {}, {}
 	for bag = 0, 4 do
 		local soul = IsSoulBag(bag)
 		for slot = 1, GetContainerNumSlots(bag) do
@@ -135,12 +135,15 @@ local function Scan()
 				total = total + count
 			elseif not id and soul then
 				table.insert(freeSoul, { bag = bag, slot = slot })
-			elseif id and REAGENT_IDS[id] and not soul then
+			elseif id and REAGENT_IDS[id] then
+				reagentTotals[id] = (reagentTotals[id] or 0) + count
+			end
+			if id and REAGENT_IDS[id] and not soul then
 				table.insert(reagents, { id = id, bag = bag, slot = slot, count = count, locked = locked })
 			end
 		end
 	end
-	return stacks, freeSoul, total, reagents
+	return stacks, freeSoul, total, reagents, reagentTotals
 end
 
 -- Deletion order: shards outside soul bags first, backpack first,
@@ -448,10 +451,12 @@ local function Backend()
 end
 
 local function PrintStatus()
-	local _, freeSoul, total = Scan()
+	local _, freeSoul, total, _, reagentTotals = Scan()
 	local color = "|cffffffff"
 	if total > db.cap then color = "|cffff9900" end -- over the cap (e.g. in combat)
 	Print("Soul Shards: " .. color .. total .. "/" .. db.cap .. "|r  (v" .. VERSION .. ")")
+	Print("Demonic Figurines: |cffffffff" .. (reagentTotals[16583] or 0)
+		.. "|r  Infernal Stones: |cffffffff" .. (reagentTotals[5565] or 0) .. "|r")
 	Print("Soul bags: " .. SoulBagList() .. (db.soulbags and " (manual)" or " (auto)")
 		.. ", " .. table.getn(freeSoul) .. " free soul slots")
 	Print("Notify " .. OnOff(db.notify) .. ", sort " .. OnOff(db.sort)

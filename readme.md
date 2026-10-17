@@ -30,7 +30,7 @@ if you have it — the addon warns you if both are on.
 | Command | Effect |
 |---|---|
 | `/shardcap 12` | Set the cap (0–200) |
-| `/shardcap` or `status` | Shards carried vs. cap (e.g. `5/12`), soul bags, settings |
+| `/shardcap` or `status` | Shards carried vs. cap (e.g. `5/12`), Demonic Figurines and Infernal Stones carried, soul bags, settings |
 | `/shardcap delete` | Trim right now, even in combat |
 | `/shardcap spam` | Toggle chat notifications |
 | `/shardcap sort` | Toggle merging/moving shards into the soul bag |

@@ -303,6 +303,11 @@ SlashCmdList.SHARDCAP("status"); SlashCmdList.SHARDCAP("help")
 check(table.getn(chat) > 5, "status/help print")
 reset(); setBag(0, 16); put(0, 1, 6265, 3); put(0, 2, 6265, 2)
 load(false); ShardCapDB.cap = 12; chat = {}; SlashCmdList.SHARDCAP("")
+check(string.find(chat[2] or "", "Demonic Figurines: |cffffffff0|r  Infernal Stones: |cffffffff0|r", 1, true) ~= nil, "reagent line with none carried")
+reset(); setBag(0, 16); setBag(4, 12, 22243); put(0, 1, 6265, 3); put(0, 2, 6265, 2)
+put(0, 3, 16583, 2); put(4, 5, 16583, 1); put(0, 4, 5565, 7)
+load(false); ShardCapDB.cap = 12; ShardCapDB.reagents = false; chat = {}; SlashCmdList.SHARDCAP("")
+check(string.find(chat[2] or "", "Demonic Figurines: |cffffffff3|r  Infernal Stones: |cffffffff7|r", 1, true) ~= nil, "reagents counted across all bags incl. soul bag (got: " .. (chat[2] or "nil") .. ")")
 check(string.find(chat[1] or "", "Soul Shards: |cffffffff5/12|r", 1, true) ~= nil, "/shardcap shows 5/12 (got: " .. (chat[1] or "nil") .. ")")
 
 -- 11. Unknown custom soul bag found through its "Soul Bag" subtype
